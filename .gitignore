@@ -1,0 +1,28 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated packages and local files
+dist/
+build/
+*.egg-info/
+.DS_Store
+*.log
+.env
+.env.*
+
+# Local development/session records
+docs/superpowers/
+
+# SSH credentials/configuration must remain outside the repository
+/config
+/known_hosts*
+/authorized_keys
+/id_*
+*.pem
+*.key

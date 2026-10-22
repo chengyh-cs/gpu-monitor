@@ -1,0 +1,9 @@
+# Example only. Merge into your own SSH config and replace these values.
+# Never commit real credentials or private keys.
+Host gpu-example
+    HostName 192.0.2.10
+    User your_username
+    Port 22
+
+# From the project directory:
+# python3 monitor.py --hosts gpu-example
