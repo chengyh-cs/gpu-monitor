@@ -45,6 +45,29 @@ def memory_percent(gpus):
     return sum(g.used for g in gpus) / sum(g.total for g in gpus) * 100
 
 
+def gpu_model(gpus, width):
+    variants = list(dict.fromkeys((re.sub(r'^(?:NVIDIA\s+)?(?:GeForce\s+)?', '', clean(g.name)).strip()
+                                  or 'Unknown', g.total) for g in gpus))
+    if not variants:
+        return '--'
+
+    def capacity(total):
+        value = '--' if total is None else '{:.1f}'.format(total / 1024).removesuffix('.0')
+        return ' ({} GiB)'.format(value)
+
+    joined = ' / '.join(name + capacity(total) for name, total in variants)
+    if len(joined) <= width:
+        return joined
+    name, total = variants[0]
+    memory = capacity(total)
+    suffix = ' +{} type{}'.format(len(variants) - 1, 's' if len(variants) > 2 else '') if len(variants) > 1 else ''
+    if len(memory) + len(suffix) + 8 > width and suffix:
+        suffix = ' +{}'.format(len(variants) - 1)
+    room = width - len(memory) - len(suffix)
+    first = name if len(name) <= room else name[:max(0, room - 3)] + '...'
+    return first + memory + suffix
+
+
 def load_role(percent):
     return 'critical' if percent >= 85 else 'warning' if percent >= 60 else 'positive'
 
@@ -167,8 +190,12 @@ def display_line(line, unicode=True, previous=''):
                 chars[i] = '│'
     if line.lstrip().startswith('---'):
         chars = ['─' if char == '-' else char for char in chars]
-    is_meter_row = line.startswith((' | VRAM ', ' | GPU  ')) or re.match(
-        r'^\s*>?\s*[\w.-]+\s+[A-Z *]+\s+(?:\d+|--)/(?:\d+|--)\s+\[', line)
+    prefix = line.partition('[')[0].split()
+    if prefix and prefix[0] == '>':
+        prefix = prefix[1:]
+    overview_meter = (len(prefix) >= 4 and prefix[1] in ('OK', 'OK*')
+                      and re.fullmatch(r'\d+/\d+', prefix[-1]))
+    is_meter_row = line.startswith((' | VRAM ', ' | GPU  ')) or overview_meter
     for match in re.finditer(r'\[([#. ?]+)\]\s+(\d+|--)%', line if is_meter_row else ''):
         for i in range(match.start(1), match.end(1)):
             if chars[i] == '#':
@@ -211,15 +238,28 @@ def overview_lines(samples, width, height, selected, now=None, stale_after=20,
                     if state == 'OK' for g in s.gpus)
     page_size = overview_capacity(height)
     page = selected // page_size
-    bar_width = 18 if width >= 100 else 10
-    row_format = '{} {:<12.12} {:<10.10} {:>9}  {:<{bar}} {:>8} {:>5}'
-    heading = row_format.format(' ', 'SERVER', 'STATE', 'READY/GPU', 'VRAM USED', 'MAX FREE', 'AGE', bar=bar_width + 7)
-    lines = [' GPU MONITOR  /  OVERVIEW' + ('  [DEMO - SIMULATED]' if demo else '  [LIVE]'),
-             ' Refresh: {:g}s   Independent sampling   {}'.format(interval, time.strftime('%H:%M:%S'))]
+    size = min(width - 3, 110)
+    compact = size < 90
+    alias_width = 10 if compact else 12
+    model_width = min(28, size - 51) if compact else min(32, size - 65)
+    ready_width, free_width = (7, 6) if compact else (9, 8)
+    memory_width = size - (2 + alias_width + 10 + model_width + ready_width + free_width + 5 + 6)
+    bar_width = memory_width - 7
+    row_format = '{} {:<' + str(alias_width) + '.' + str(alias_width) + '} {:<10.10} {:<' + str(model_width) + '} '
+    row_format += ' '.join(['{:>' + str(ready_width) + '}', '{:<' + str(memory_width) + '}',
+                            '{:>' + str(free_width) + '}', '{:>5}'])
+    heading = row_format.format(' ', 'SERVER', 'STATE', 'GPU MODEL', 'RDY/GPU' if compact else 'READY/GPU',
+                                'VRAM USED' if memory_width >= 13 else 'VRAM', 'FREE' if compact else 'MAX FREE', 'AGE')
+    mode = '[DEMO - SIMULATED]' if demo else '[LIVE]'
+    clock = time.strftime('%H:%M:%S', time.localtime(now))
+    title = 'GPU MONITOR  /  OVERVIEW'
+    refresh = 'Refresh: {:g}s   Independent sampling'.format(interval)
+    lines = [' ' + title.ljust(size - len(mode)) + mode,
+             ' ' + refresh.ljust(size - len(clock)) + clock]
     lines += summary_cards(['{} servers'.format(len(samples)), '{} online'.format(healthy),
                             '{} candidate GPUs'.format(available)], width)
-    lines += [' Candidate: free >= {:g} GiB AND GPU util <= {:g}%'.format(min_free, max_util), '',
-              ' ' + heading, '   ' + '-' * (len(heading) - 2)]
+    lines += [' Filter: free >= {:g} GiB AND GPU util <= {:g}%'.format(min_free, max_util), '',
+              ' ' + heading, ' ' + '-' * size]
     for index in range(page * page_size, min(len(samples), (page + 1) * page_size)):
         s, state = samples[index], states[index]
         valid = state == 'OK'
@@ -227,12 +267,20 @@ def overview_lines(samples, width, height, selected, now=None, stale_after=20,
         ready = str(sum(candidate(g, min_free, max_util) for g in s.gpus)) if valid else '--'
         free = [g.free for g in s.gpus if g.free is not None] if valid else []
         label = ('CHECKING' if state == 'WAIT' else state) + ('*' if index in pending and state != 'WAIT' else '')
+        percent = memory_percent(s.gpus) if valid else None
+        if percent is None:
+            memory = '--  no data' if memory_width >= 11 else '--'
+        else:
+            memory = meter(percent, bar_width) if memory_width >= 13 else '{:.0f}%'.format(percent)
         lines.append(' ' + row_format.format(
-            '>' if index == selected else ' ', s.host.alias, label, ready + '/' + count,
-            meter(memory_percent(s.gpus) if valid else None, bar_width),
-            gib(max(free)) if free else '--', age(s, now), bar=bar_width + 7))
-    lines += ['   ' + '-' * (len(heading) - 2),
-              ' Page {}/{}   READY/GPU: candidate / total   * refreshing'.format(page + 1, max(1, math.ceil(len(samples) / page_size)))]
+            '>' if index == selected else ' ', s.host.alias, label,
+            gpu_model(s.gpus, model_width) if valid else '--', ready + '/' + count,
+            memory, gib(max(free)) if free else '--', age(s, now)))
+    lines += [' ' + '-' * size,
+              ' Page {}/{}   {}-{} of {} servers   * refreshing'.format(
+                  page + 1, max(1, math.ceil(len(samples) / page_size)),
+                  page * page_size + 1 if samples else 0,
+                  min(len(samples), (page + 1) * page_size), len(samples))]
     return fit(footer(lines, height, 'Up/Down: select Enter: open PgUp/PgDn: page r: refresh ?: help q: quit'), width, height)
 
 
@@ -466,11 +514,11 @@ def _run_tui(screen, poller, samples, args, inputs):
                     style = colors.get('border', curses.A_BOLD)
                 elif is_detail_header and y == 4:
                     style = colors.get('muted', curses.A_NORMAL)
-                elif re.match(r'^ \+- GPU \d', line) or 'SERVER' in line and 'READY/GPU' in line:
+                elif re.match(r'^ \+- GPU \d', line) or 'SERVER' in line and 'GPU MODEL' in line:
                     style = curses.A_BOLD
                 elif 'PID' in line and 'COMMAND' in line:
                     style = curses.A_BOLD | colors.get('accent', 0)
-                elif stripped.startswith(('UUID:', '| UUID:', 'Sample:', 'Refresh:', 'Page ', 'GPU page ', '---', '+---')):
+                elif stripped.startswith(('UUID:', '| UUID:', 'Sample:', 'Refresh:', 'Filter:', 'Page ', 'GPU page ', '---', '+---')):
                     style = curses.A_DIM if colors else curses.A_NORMAL
                 previous = previous_lines[y]
                 visual = display_line(line, unicode, previous)
@@ -485,10 +533,23 @@ def _run_tui(screen, poller, samples, args, inputs):
                             if is_detail_header and y == 1:
                                 token_style |= curses.A_REVERSE
                             screen.addnstr(y, start, visual[start:end], end - start, token_style)
-                    # Highlight only the server label; resource colors stay legible.
+                    if colors and view == 'overview' and not show_help and 9 <= y < 9 + overview_capacity(height):
+                        for match in re.finditer(r'(?<!\S)(\d+)%', line):
+                            screen.addnstr(y, match.start(), visual[match.start():match.end()],
+                                           match.end() - match.start(), colors[load_role(float(match[1]))])
+                        if '--  no data' in line:
+                            start = line.index('--  no data')
+                            screen.addnstr(y, start, visual[start:start + 11], 11, colors['muted'])
+                        for match in re.finditer(r'\bOFFLINE\*?', line):
+                            screen.addnstr(y, match.start(), visual[match.start():match.end()],
+                                           match.end() - match.start(), colors['muted'])
+                    # A colored pointer and alias preserve focus without a solid block.
                     if stripped.startswith('>'):
-                        start = line.index('>')
-                        screen.addnstr(y, start, visual[start:start + 14], 14, curses.A_REVERSE | curses.A_BOLD)
+                        match = re.search(r'>\s+\S+', line)
+                        if match:
+                            start, end = match.span()
+                            screen.addnstr(y, start, visual[start:end], end - start,
+                                           colors.get('accent', curses.A_BOLD))
                     if not is_title:
                         for start, end in border_spans(line, previous):
                             screen.addnstr(y, start, visual[start:end], end - start,

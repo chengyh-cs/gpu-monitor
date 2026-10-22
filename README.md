@@ -1,52 +1,83 @@
-# 实验室 GPU 监控
+# GPU Monitor
 
-复用 `~/.ssh/config` 的 Python 终端脚本，不需要新增 SSH 别名、安装 Python 第三方包或在服务器上部署服务。适用于 macOS / Linux、Python 3.9+；远端需要 NVIDIA 驱动提供的 `nvidia-smi`。进程扩展信息使用 Linux 的 `ps` 和常规 shell 工具，不要求远端安装 Python。
+通过 SSH 查看多台服务器的 NVIDIA GPU 状态，支持终端交互界面、单次文本输出和 JSON 输出。复用已有 SSH 配置，只读采集显存、利用率、温度和进程信息，不需要安装 Python 第三方包或在服务器上部署监控服务。
 
-## 启动
+## 环境要求
 
-将项目放在任意目录，在项目根目录运行（不必放在 `~/.ssh` 下）：
+- 本地：macOS / Linux、Python 3.9+ 和 OpenSSH 客户端；交互界面需要可用的 Python `curses` 模块和至少 72×20 的终端窗口。
+- 远端：可通过 SSH 登录，已安装 NVIDIA 驱动，且登录环境中可以执行 `nvidia-smi`。进程扩展信息使用 Linux 的 `ps` 和常规 shell 工具，不要求远端安装 Python。
+- 认证：使用 SSH 密钥或 ssh-agent 等无需交互的认证方式；首次连接时需先核验并接受服务器主机密钥。
+
+## 快速开始
+
+将项目下载到任意目录，以下 `python3 monitor.py` 命令均在项目根目录执行。
+
+### 1. 体验演示
+
+无需配置 SSH 或连接服务器，即可查看界面：
 
 ```bash
-python3 monitor.py
+python3 monitor.py --demo
 ```
 
-默认每 60 秒（1 分钟）刷新，自动读取 NCRC 和 SLAI 的配置，按服务器编号排序。普通与 `_codex` 别名指向相同连接目标时只采集一次；相同 IP 的不同 SSH 端口分别保留。监控目标数量由本机配置决定。可通过 `--interval` 指定其他采集间隔（单位为秒）。
+### 2. 配置 SSH 连接
 
-连接参数和密钥设置由 OpenSSH 解析。脚本只在自己的连接中禁用端口转发、强制终端、预设远端命令和已有连接复用，不改写 SSH config。候选服务器清单在启动时读取，修改 config 后重启即可更新清单。
+如果已有可用的 SSH 别名，可直接使用。否则，在 `~/.ssh/config` 中添加类似配置，将示例地址和用户名替换成实际连接信息：
 
-其他用户可以参照 `ssh_config.example` 设置自己的 SSH 别名，再运行：
+```sshconfig
+Host gpu-example
+    HostName 192.0.2.10
+    User your_username
+    Port 22
+```
+
+也可参考仓库中的 [ssh_config.example](ssh_config.example)。示例地址为虚构地址；根据需要补充 `IdentityFile`、`ProxyJump` 等 OpenSSH 配置。
+
+首次使用时，先手动连接以核验主机指纹，并确认远端能够查询 GPU：
+
+```bash
+ssh gpu-example nvidia-smi
+```
+
+监控程序不会提示输入密码或密钥口令；如密钥有口令，请先将其加载到 ssh-agent。
+
+### 3. 启动监控
 
 ```bash
 python3 monitor.py --hosts gpu-example
 ```
 
-`ssh_config.example` 仅含虚构地址，需要替换成实际连接信息。SSH 配置和密钥保留在本机，项目中不包含这些文件。无网络体验可运行 `python3 monitor.py --demo`。
+`--hosts` 后可填写一个或多个 SSH 别名。默认每 60 秒刷新，可通过 `--interval` 调整采集间隔（单位为秒）。
 
-## 项目文件
+## SSH 配置与目标选择
 
-- `monitor.py`：命令行入口。
-- `core.py`：SSH 发现、采集和调度。
-- `processes.py`：GPU 进程信息解析。
-- `ui.py`：终端界面与导航。
-- `terminal_input.py`：键盘、鼠标和触控板输入。
-- `tests/`：自动化测试。
-- `ssh_config.example`：虚构 SSH 配置示例。
+默认读取 `~/.ssh/config`，也可通过 `--config` 指定独立配置文件：
 
-发布时以本项目目录为仓库根目录；`.gitignore` 排除缓存、打包输出、本地开发记录及常见凭据文件。不要将父目录 `~/.ssh` 作为仓库或压缩包内容。
+```bash
+python3 monitor.py --config /path/to/ssh_config --hosts gpu-example
+```
+
+**建议始终通过 `--hosts` 明确指定目标。** 当前版本省略此参数时仍使用面向原始部署环境的固定别名匹配规则，并不会自动监控 SSH 配置中的所有服务器。使用自己的别名无需遵循该命名规则。
+
+连接参数和密钥设置由 OpenSSH 解析。默认目标发现支持静态 `Include` 文件中的显式别名与路径通配符，不枚举 `Host *` 等服务器通配符；使用动态 Include 路径时，请通过 `--hosts` 指定目标，再由 OpenSSH 解析连接配置。多个别名解析出的主机名、端口、用户名和代理路径均相同时只采集一次；不同端口的连接分别保留。目标清单在启动时读取，修改配置后需重启程序。
+
+程序在自己的 SSH 连接中禁用端口转发、强制终端、预设远端命令和已有连接复用，不改写 SSH 配置。SSH 配置和密钥由用户在本机管理。
 
 ## 界面与操作
 
-总览每台服务器一行，显示状态、`READY/GPU`（候选数量 / GPU 总数）、显存占用条、单卡最大剩余显存与样本年龄。总览的 `VRAM USED` 为所有 GPU 的已用显存之和 / 总显存之和，不是单卡平均百分比。任一卡的显存字段缺失时不计算整机比例。
+总览每台服务器一行，显示状态、`GPU MODEL`（GPU 型号）、`READY/GPU`（候选数量 / GPU 总数）、显存占用条、单卡最大剩余显存与样本年龄。总览的 `VRAM USED` 为所有 GPU 的已用显存之和 / 总显存之和，不是单卡平均百分比。任一卡的显存字段缺失时不计算整机比例。
+
+总览型号省略 NVIDIA / GeForce 品牌前缀，型号后以括号标注实际采集的单卡总显存，例如 `RTX 4090 (24 GiB)`。容量以 GiB 显示并四舍五入至一位小数，未知时为 `(-- GiB)`。同型号、同容量只显示一次；同型号不同容量作为不同规格列出。多种型号在空间足够时并列，否则显示首个型号及 `+N type(s)`，表示还有 N 种型号/容量组合（窄窗口简写为 `+N`），完整名称可进入详情查看。无当前有效数据时型号显示 `--`。窄窗口缩短列名和进度条，空间不足时显存列仅显示带颜色的百分比；型号、状态和数值仍保持对齐。
 
 回车进入单台详情，每张 GPU 同时显示显存占用和计算利用率两条进度条，以及型号、已用/总显存、剩余显存、温度和 UUID。更宽的终端会自动加长进度条。
 
 GPU 指标下方是该卡的进程表，显示 `PID`、`USER`、`TYPE`（Compute / Graphic 等）、`GPU%`、进程显存 `VRAM` 和 `COMMAND`。窗口宽度至少 109 列时增加 `CPU%` 与主机内存 `RAM`。同一 PID 使用多张卡时分别显示在对应卡下，按显存占用从高到低排列。进程较多时独立分页，长命令可横向滚动，`cmd +20` 等提示表示当前命令偏移量。
 
-界面标题与快捷键用青色，候选 GPU 用绿色，忙碌或暂时不可达状态用黄色，认证/配置错误用红色；温度和演示标签用紫色。进度条按占用率着色：低于 60% 绿色，60% 至低于 85% 黄色，85% 及以上红色。这些颜色表示负载，不代表程序报错，也不替代候选可用的独立阈值。缺失、离线或过期数据用 `[??????????] --%` 表示未知，不显示为 0%。
+界面标题与快捷键用青色，候选 GPU 用绿色，忙碌和超时等状态用黄色，总览的 OFFLINE 状态用灰色，认证/配置错误用红色；温度和演示标签用紫色。进度条按占用率着色：低于 60% 绿色，60% 至低于 85% 黄色，85% 及以上红色。这些颜色表示负载，不代表程序报错，也不替代候选可用的独立阈值。总览中的缺失、离线或过期显存数据用 `-- no data` 表示未知；详情中缺失的指标保留 `[??????????] --%`，均不显示为 0%。
 
 单台服务器的所有 GPU 连续排列在同一个详情页，通过上下键逐行滚动、PgUp/PgDn 按屏滚动、Home/End 跳至首尾。右侧滚动条显示可见范围与当前位置，底部显示行数；顶部服务器信息与底部快捷键固定。刷新与窗口缩放时保留滚动位置，并在内容缩短时自动限制到有效范围。每张卡的进程行数根据窗口高度自动调整。总览随窗口高度分页。窗口小于 72×20 时显示放大提示。界面使用英文短标签保证终端对齐，状态含文字说明，不依赖颜色。
 
-总览使用无底色的青色标题和三张摘要卡片，展示服务器数、当前在线数和候选 GPU 数。详情顶部采用六行固定信息栏：青色应用标识、突出显示的服务器别名、右侧状态徽标、SSH 地址、对齐的采样/样本年龄/查询耗时，以及候选条件。标签降低亮度，时间和连接信息保留清晰对比，白色细线与 GPU 区域分隔。每张 GPU 有独立圆角线框，四边统一白色。底部固定操作栏，UUID 等辅助信息降低亮度，边框亮度保持一致。支持 UTF-8 的终端默认显示 Unicode 线框与实心进度条；若字体显示不佳，可加 `--ascii` 使用纯 ASCII，或同时加 `--no-color` 使用朴素模式。
+总览使用无底色的青色标题和三张摘要卡片，展示服务器数、当前在线数和候选 GPU 数。摘要、表格和分隔线采用统一宽度，列间距和进度条随窗口调整；选中服务器以青色箭头和别名标示，无实心底色。模式标记与时钟右对齐，筛选条件和分页说明降低亮度。详情顶部采用六行固定信息栏：青色应用标识、突出显示的服务器别名、右侧状态徽标、SSH 地址、对齐的采样/样本年龄/查询耗时，以及候选条件。标签降低亮度，时间和连接信息保留清晰对比，白色细线与 GPU 区域分隔。每张 GPU 有独立圆角线框，四边统一白色。底部固定操作栏，UUID 等辅助信息降低亮度，边框亮度保持一致。支持 UTF-8 的终端默认显示 Unicode 线框与实心进度条；若字体显示不佳，可加 `--ascii` 使用纯 ASCII，或同时加 `--no-color` 使用朴素模式。
 
 | 按键 | 操作 |
 | --- | --- |
@@ -73,26 +104,29 @@ GPU 指标下方是该卡的进程表，显示 `PID`、`USER`、`TYPE`（Compute
 python3 monitor.py --demo
 
 # 只看两台服务器，每 10 秒刷新
-python3 monitor.py --hosts ncrc_167 ncrc_169 --interval 10
+python3 monitor.py --hosts gpu-01 gpu-02 --interval 10
 
 # 调整候选可用阈值：空闲显存 >= 24 GiB，利用率 <= 5%
-python3 monitor.py --min-free-gib 24 --max-util 5
+python3 monitor.py --hosts gpu-example --min-free-gib 24 --max-util 5
 
 # 网络较慢时调整单次完整查询的超时
-python3 monitor.py --timeout 20
+python3 monitor.py --hosts gpu-example --timeout 20
 
 # 仅检查解析后的服务器清单，不连接服务器
-python3 monitor.py --list
+python3 monitor.py --hosts gpu-example --list
 
 # 单次文本结果，或 JSON（显存单位 MiB、时间为 Unix 秒）
-python3 monitor.py --once
-python3 monitor.py --json
+python3 monitor.py --hosts gpu-example --once
+python3 monitor.py --hosts gpu-example --json
+
+# 使用纯 ASCII 线框并关闭颜色
+python3 monitor.py --hosts gpu-example --ascii --no-color
 
 # 其他选项
 python3 monitor.py --help
 ```
 
-默认识别 `ncrc_<数字>`、`ncrc_<数字>_codex`、`slai`、`slai_lf`；GitHub 和 OrbStack 不属于默认监控范围。可用 `--hosts` 指定其他别名。支持静态 `Include` 文件中的显式别名与路径通配符，不枚举 `Host *` 等服务器通配符；动态 Include 路径请改用 `--hosts`。`--config` 可指定其他配置文件。
+以上 `gpu-example`、`gpu-01`、`gpu-02` 均为示例别名，请替换为自己 SSH 配置中的目标。非交互终端或重定向输出时，使用 `--once` 或 `--json`。
 
 ## 可用性与故障状态
 
@@ -120,7 +154,7 @@ python3 monitor.py --help
 
 进程 `GPU%` 来自 `nvidia-smi pmon` 的 SM 利用率；驱动或 MIG 模式不支持时为 `--`，不会用整卡利用率代替。`CPU%` 是 `ps` 的进程生命周期平均值，可超过 100%，与 nvtop 的瞬时 CPU 采样口径不同。`VRAM` 中 `M` 为 MiB，`RAM` 为 RSS 常驻内存且 `G` 为 GiB。进程可能在连续采集命令之间退出或变化，无法取得的用户/命令等字段保持未知或回退到 NVIDIA 进程名。完整进程命令也会出现在 `--json` 输出中。
 
-无人值守模式使用 `BatchMode=yes`，不会循环弹出密码或指纹确认。可先在终端中运行 `ssh ncrc_167` 等确认目标别名能正常认证。该脚本保持 SSH 主机密钥校验，不自动信任新密钥。
+SSH 连接使用 `BatchMode=yes`，不会弹出密码或指纹确认。遇到认证问题时，可先在终端中运行 `ssh gpu-example`，确认目标别名、密钥和 ssh-agent 配置正确。程序保持 SSH 主机密钥校验，不自动信任新密钥。
 
 当前展示物理 GPU 及其进程，不解析 MIG 实例分配、调度器分配或历史趋势。进程用户表示操作系统进程所有者，不代表调度器资源归属。MIG 模式下 NVIDIA 的利用率字段可能不支持，这些卡会标为 `UNKNOWN`，不会误判为候选。参考：[NVIDIA nvidia-smi 文档](https://docs.nvidia.com/deploy/nvidia-smi/index.html)。
 
@@ -128,8 +162,19 @@ python3 monitor.py --help
 
 ## 开发验证
 
+项目文件：
+
+- `monitor.py`：命令行入口。
+- `core.py`：SSH 发现、采集和调度。
+- `processes.py`：GPU 进程信息解析。
+- `ui.py`：终端界面与导航。
+- `terminal_input.py`：键盘、鼠标和触控板输入。
+- `tests/`：自动化测试。
+- `ssh_config.example`：虚构 SSH 配置示例。
+
+在项目根目录运行：
+
 ```bash
-cd gpu-monitor
 python3 -m unittest discover -s tests -v
 ```
 

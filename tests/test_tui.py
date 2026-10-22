@@ -150,8 +150,46 @@ class TUITests(unittest.TestCase):
         self.assertIn(('0%', 'positive'), [(line[a:b], role) for a,b,role in spans])
         sample = core.demo_samples()[6]
         row = next(l for l in ui.overview_lines([sample], 80, 24, 0) if sample.host.alias in l)
-        self.assertIn('[??????????]', row)
+        self.assertIn('--', row)
         self.assertNotIn('#', row)
+
+    def test_overview_columns_align_with_summary_at_all_widths(self):
+        samples = core.demo_samples()
+        samples[0].gpus = [dataclasses.replace(samples[0].gpus[0], used=81920)]
+        for width in range(72, 145):
+            with self.subTest(width=width):
+                lines = ui.overview_lines(samples, width, 24, 0)
+                self.assertEqual(len(lines[2]), len(lines[8]))
+                self.assertEqual(len(lines[7]), len(lines[8]))
+                for row in lines[9:18]:
+                    self.assertEqual(len(row), len(lines[8]))
+                self.assertIn('100%', lines[9])
+                self.assertTrue(lines[9].rstrip().endswith('0s'))
+                self.assertTrue(all(len(line) < width for line in lines))
+
+    def test_overview_models_preserve_variants_and_mark_mixed_hardware(self):
+        sample = core.demo_samples()[0]
+        sample.gpus = [dataclasses.replace(sample.gpus[0], name='NVIDIA GeForce RTX 4090', total=24576)]
+        for width in (72, 80, 100, 130):
+            lines = ui.overview_lines([sample], width, 24, 0)
+            self.assertIn('GPU MODEL', lines[7])
+            self.assertIn('RTX 4090 (24 GiB)', lines[9])
+        sample.gpus.append(dataclasses.replace(sample.gpus[0], name='NVIDIA GeForce RTX 3090'))
+        self.assertIn('+1', ui.overview_lines([sample], 72, 24, 0)[9])
+        wide = ui.overview_lines([sample], 130, 24, 0)[9]
+        self.assertIn('RTX 4090 (24 GiB) +1 type', wide)
+        self.assertIn('RTX 3090 (24 GiB)', ui.gpu_model(sample.gpus, 60))
+        sample.gpus = [dataclasses.replace(sample.gpus[0], name='NVIDIA A100-SXM4-80GB')]
+        self.assertIn('A100-SXM4-80GB', ui.overview_lines([sample], 130, 24, 0)[9])
+        sample.state = 'OFFLINE'
+        self.assertNotIn('A100', ui.overview_lines([sample], 130, 24, 0)[9])
+
+    def test_model_capacity_distinguishes_variants_and_missing_values(self):
+        gpu = dataclasses.replace(core.demo_samples()[0].gpus[0], name='NVIDIA A100', total=40960)
+        other = dataclasses.replace(gpu, total=81920)
+        self.assertEqual(ui.gpu_model([gpu, other], 60), 'A100 (40 GiB) / A100 (80 GiB)')
+        self.assertEqual(ui.gpu_model([gpu, gpu], 60), 'A100 (40 GiB)')
+        self.assertEqual(ui.gpu_model([dataclasses.replace(gpu, total=None)], 60), 'A100 (-- GiB)')
 
     def test_navigation_overview_details_scroll_help_and_back(self):
         args = monitor.parser().parse_args(['--demo', '--no-color'])
