@@ -26,6 +26,17 @@ class InputTests(unittest.TestCase):
         self.assertEqual(reader.read(), ord('q'))
         self.assertEqual(self.reader([27, -1]).read(), 27)
 
+    def test_escape_delay_is_reduced_and_restored_even_on_interrupt(self):
+        with mock.patch('terminal_input.curses.get_escdelay', return_value=1000), \
+                mock.patch('terminal_input.curses.set_escdelay') as delay, \
+                mock.patch('terminal_input.curses.mousemask', return_value=(1, 0)), \
+                mock.patch('terminal_input.sys.stdout.isatty', return_value=False):
+            with self.assertRaises(KeyboardInterrupt):
+                with self.reader([]):
+                    delay.assert_called_once_with(25)
+                    raise KeyboardInterrupt
+            self.assertEqual(delay.call_args_list, [mock.call(25), mock.call(1000)])
+
     def test_modern_curses_mouse_and_unavailable_event(self):
         reader = self.reader([curses.KEY_MOUSE] * 3)
         with mock.patch('terminal_input.curses.BUTTON5_PRESSED', 1 << 25, create=True), \

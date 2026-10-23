@@ -111,6 +111,18 @@ def overview_capacity(height):
     return max(1, height - 14)
 
 
+def overview_origin(width, height, count):
+    """Center the dashboard within the area above the fixed shortcut footer.
+
+    Reserve the same row count on every page to keep pagination stationary.
+    """
+    if width < 72 or height < 20:
+        return 0, 0
+    block_width = min(width - 3, 110)
+    block_height = 11 + min(count, overview_capacity(height))
+    return max(0, (width - block_width) // 2 - 1), max(0, (height - 2 - block_height) // 2)
+
+
 def process_capacity(height):
     return max(3, min(10, height - 17))
 
@@ -501,7 +513,17 @@ def _run_tui(screen, poller, samples, args, inputs):
         frame = (lines, width, height, detail)
         if frame != last_frame:
             screen.erase()
+            center_overview = view == 'overview' and not show_help and width >= 72 and height >= 20
+            origin_x, origin_y = overview_origin(width, height, len(samples)) if center_overview else (0, 0)
             for y, line in enumerate(lines):
+                if not line:
+                    continue
+                row, column = y, 0
+                if center_overview:
+                    if y == height - 2:
+                        column = max(0, (width - len(line)) // 2)
+                    else:
+                        row, column = y + origin_y, origin_x
                 style = curses.A_NORMAL
                 stripped = line.lstrip()
                 is_detail_header = detail and detail.track_size and y < 6
@@ -523,7 +545,7 @@ def _run_tui(screen, poller, samples, args, inputs):
                 previous = previous_lines[y]
                 visual = display_line(line, unicode, previous)
                 try:
-                    screen.addnstr(y, 0, visual, max(0, width - 1), style)
+                    screen.addnstr(row, column, visual, max(0, width - 1 - column), style)
                     if colors and not is_title:
                         spans = color_spans(line)
                         if is_detail_header:
@@ -532,27 +554,27 @@ def _run_tui(screen, poller, samples, args, inputs):
                             token_style = colors[role]
                             if is_detail_header and y == 1:
                                 token_style |= curses.A_REVERSE
-                            screen.addnstr(y, start, visual[start:end], end - start, token_style)
+                            screen.addnstr(row, column + start, visual[start:end], end - start, token_style)
                     if colors and view == 'overview' and not show_help and 9 <= y < 9 + overview_capacity(height):
                         for match in re.finditer(r'(?<!\S)(\d+)%', line):
-                            screen.addnstr(y, match.start(), visual[match.start():match.end()],
+                            screen.addnstr(row, column + match.start(), visual[match.start():match.end()],
                                            match.end() - match.start(), colors[load_role(float(match[1]))])
                         if '--  no data' in line:
                             start = line.index('--  no data')
-                            screen.addnstr(y, start, visual[start:start + 11], 11, colors['muted'])
+                            screen.addnstr(row, column + start, visual[start:start + 11], 11, colors['muted'])
                         for match in re.finditer(r'\bOFFLINE\*?', line):
-                            screen.addnstr(y, match.start(), visual[match.start():match.end()],
+                            screen.addnstr(row, column + match.start(), visual[match.start():match.end()],
                                            match.end() - match.start(), colors['muted'])
                     # A colored pointer and alias preserve focus without a solid block.
                     if stripped.startswith('>'):
                         match = re.search(r'>\s+\S+', line)
                         if match:
                             start, end = match.span()
-                            screen.addnstr(y, start, visual[start:end], end - start,
+                            screen.addnstr(row, column + start, visual[start:end], end - start,
                                            colors.get('accent', curses.A_BOLD))
                     if not is_title:
                         for start, end in border_spans(line, previous):
-                            screen.addnstr(y, start, visual[start:end], end - start,
+                            screen.addnstr(row, column + start, visual[start:end], end - start,
                                            colors.get('border', curses.A_BOLD))
                 except curses.error:
                     pass

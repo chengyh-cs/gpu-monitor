@@ -22,9 +22,17 @@ class TerminalInput:
         self.screen = screen
         self.pending = deque()
         self.old_mask = None
+        self.old_escdelay = None
         self.enabled = False
 
     def __enter__(self):
+        # Curses normally waits 1000 ms to distinguish Esc from a key sequence.
+        # This local TUI needs only a short window; preserve faster user settings.
+        try:
+            self.old_escdelay = curses.get_escdelay()
+            curses.set_escdelay(min(self.old_escdelay, 25))
+        except (AttributeError, curses.error):
+            self.old_escdelay = None
         try:
             _, self.old_mask = curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
         except curses.error:
@@ -43,6 +51,8 @@ class TerminalInput:
                 sys.stdout.write('\x1b[?1006l\x1b[?1002l\x1b[?1000l')
                 sys.stdout.flush()
         finally:
+            if self.old_escdelay is not None:
+                curses.set_escdelay(self.old_escdelay)
             if self.old_mask is not None:
                 try:
                     curses.mousemask(self.old_mask)
@@ -70,7 +80,16 @@ class TerminalInput:
         # digits/brackets never activate unrelated keyboard shortcuts.
         prefix = []
         for expected in (ord('['), ord('<')):
-            char = self.screen.getch()
+            if not prefix:
+                # getch already waited to resolve Esc. Check queued bytes
+                # without adding the normal 100 ms polling timeout again.
+                self.screen.timeout(0)
+                try:
+                    char = self.screen.getch()
+                finally:
+                    self.screen.timeout(100)
+            else:
+                char = self.screen.getch()
             if char != -1:
                 prefix.append(char)
             if char != expected:

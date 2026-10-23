@@ -1,6 +1,7 @@
 """Exercise navigation frames and real curses startup on a small PTY."""
 import fcntl
 import dataclasses
+from concurrent.futures import Future
 import os
 from pathlib import Path
 import select
@@ -47,7 +48,7 @@ class Screen:
         self.lines[y] = previous[:x].ljust(x) + line[:width] + previous[x + len(line[:width]):]
 
     def refresh(self):
-        self.frames.append('\n'.join(self.lines.values()))
+        self.frames.append('\n'.join(self.lines.get(y, '') for y in range(self.getmaxyx()[0])))
         self.style_frames.append(dict(self.styles))
 
     def getch(self):
@@ -55,6 +56,46 @@ class Screen:
 
 
 class TUITests(unittest.TestCase):
+    def test_escape_returns_using_cached_samples_without_new_collection(self):
+        args = monitor.parser().parse_args(['--no-color'])
+        sample = core.demo_samples()[0]
+        finished = Future()
+        finished.set_result(sample)
+        screen = Screen([10, 27, -1, ord('q')])
+        with mock.patch('core.ThreadPoolExecutor') as executor, mock.patch('ui.curses.curs_set'):
+            executor.return_value.submit.return_value = finished
+            poller = core.Poller([sample.host], Path('/tmp/example-config'), 60, 10)
+            poller.snapshots = [sample]
+            try:
+                ui.run_tui(screen, poller, None, args)
+                self.assertEqual(executor.return_value.submit.call_count, 1)
+                self.assertIn('GPU MONITOR / SERVER', screen.frames[1])
+                self.assertIn('OVERVIEW', screen.frames[-1])
+                self.assertIn(sample.host.alias, screen.frames[-1])
+            finally:
+                poller.close()
+
+    def test_overview_block_is_centered_and_footer_stays_at_bottom(self):
+        args = monitor.parser().parse_args(['--demo', '--no-color'])
+        for height, width in ((40, 160), (50, 200), (20, 72)):
+            with self.subTest(height=height, width=width):
+                screen = Screen([ui.curses.KEY_DOWN, 10, ord('q')])
+                screen.getmaxyx = lambda: (height, width)
+                samples = core.demo_samples()[:7]
+                with mock.patch('ui.curses.curs_set'):
+                    ui.run_tui(screen, None, samples, args)
+                lines = screen.frames[0].splitlines()
+                top = next(y for y, line in enumerate(lines) if 'OVERVIEW' in line)
+                end = next(y for y, line in enumerate(lines) if 'Page 1/' in line)
+                self.assertLessEqual(abs(top - (height - 3 - end)), 1)
+                rule = next(line for line in lines if '────' in line and '╭' not in line and '╰' not in line)
+                left = rule.index('─')
+                right = width - len(rule)
+                self.assertLessEqual(abs(left - right), 1)
+                self.assertIn('q: quit', lines[height - 2])
+                self.assertIn('> ncrc_64', screen.frames[1])
+                self.assertIn('GPU MONITOR / SERVER', screen.frames[2])
+
     def test_sgr_wheel_and_trackpad_scroll_in_both_directions(self):
         args = monitor.parser().parse_args(['--demo', '--no-color'])
         wheel_down = list(b'\x1b[<65;20;10M')
@@ -273,7 +314,9 @@ class TUITests(unittest.TestCase):
                             (b'\x1b[<65;20;10M', '4-{}'.format(rows - 6).encode()),
                             (b'\x1b[<64;20;10M', '1-{}'.format(rows - 9).encode()),
                             (b'\x1bOF', b'76/76'),
+                            (b'\x1b', b'OVERVIEW'),
                         ]:
+                            started = time.monotonic()
                             os.write(master, keys)
                             detail_output = b''
                             deadline = time.monotonic() + 3
@@ -281,6 +324,9 @@ class TUITests(unittest.TestCase):
                                 if select.select([master], [], [], .1)[0]:
                                     detail_output += os.read(master, 65536)
                             self.assertIn(expected, detail_output)
+                            if keys == b'\x1b':
+                                self.assertLess(time.monotonic() - started, .35,
+                                                'Esc should return without the default one-second escape delay')
                             output += detail_output
                     os.write(master, b'q')
                     # Keep draining: macOS PTYs can block curses on final output
